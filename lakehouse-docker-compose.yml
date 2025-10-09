@@ -1,0 +1,101 @@
+services:
+    hdfs-namenode:
+        image: apache/hadoop:3.4
+        platform: linux/amd64
+        container_name: hudi-cdc-hdfs-namenode
+        ports:
+            - "9870:9870"
+            - "9000:9000"
+        volumes:
+            - hdfs-namenode-data:/hadoop/dfs/name
+            - ${PWD}/config_files/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml
+            - ${PWD}/config_files/hdfs-site.xml:/opt/hadoop/etc/hadoop/hdfs-site.xml
+            - ${PWD}/scripts/namenode-init.sh:/namenode-init.sh
+        entrypoint: ["/bin/bash", "/namenode-init.sh"]
+        healthcheck:
+            test: ["CMD", "curl", "-f", "http://localhost:9870"]
+            interval: 10s
+            timeout: 3s
+            retries: 5
+        networks:
+            - cdc-network
+
+    hdfs-datanode1:
+        image: apache/hadoop:3.4
+        platform: linux/amd64
+        container_name: hudi-cdc-hdfs-datanode1
+        depends_on:
+            - hdfs-namenode
+        volumes:
+            - hdfs-datanode1-data:/hadoop/dfs/data
+            - ${PWD}/config_files/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml
+
+        command: ["hdfs", "datanode"]
+        networks:
+            - cdc-network
+
+    hive-metastore:
+        build:
+            context: ./hive-metastore
+            dockerfile: Dockerfile
+        container_name: hudi-cdc-hive-metastore
+        ports:
+            - "9083:9083"
+        volumes:
+            - ${PWD}/config_files/hive-site.xml:/hive_custom_conf/hive-site.xml
+            - ${PWD}/config_files/core-site.xml:/hive_custom_conf/core-site.xml
+            - ${PWD}/config_files/hdfs-site.xml:/hive_custom_conf/hdfs-site.xml
+            - ./docker_data/warehouse:/opt/hive/data/new-warehouse
+        depends_on:
+            hive-metastore-db:
+                condition: service_healthy
+            hdfs-namenode:
+                condition: service_started
+        networks:
+            - cdc-network
+
+    hive-metastore-db:
+        image: mysql:8.0
+        container_name: hudi-cdc-hive-metastore-db
+        environment:
+            MYSQL_ROOT_PASSWORD: metastore-root-password
+            MYSQL_DATABASE: metastore
+            MYSQL_USER: metastore-user
+            MYSQL_PASSWORD: metastore-password
+        volumes:
+            - hive-metastore-db-data:/var/lib/mysql
+            - ${PWD}/scripts/init-hive-metastore-db.sh:/docker-entrypoint-initdb.d/init-mysql.sh
+        healthcheck:
+            test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+            start_period: 30s
+        networks:
+            - cdc-network
+
+    spark:
+        build:
+            context: ./spark
+            dockerfile: Dockerfile
+        command: tail -F /dev/null
+        container_name: hudi-cdc-spark
+        environment:
+            - SPARK_MODE=master
+        ports:
+            - "8080:8080"
+            - "7077:7077"
+        volumes:
+            - ${PWD}/config_files/hive-site.xml:/opt/spark/conf/hive-site.xml
+            - ${PWD}/config_files/core-site.xml:/opt/spark/conf/core-site.xml
+        networks:
+            - cdc-network
+
+volumes:
+    hdfs-namenode-data:
+    hdfs-datanode1-data:
+    hive-metastore-db-data:
+
+networks:
+    cdc-network:
+        external: true
